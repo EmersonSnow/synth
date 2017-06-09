@@ -7,7 +7,7 @@ float zelmSynthUtil::wavetable[WAVETABLE_SIZE+1];
 
 //--------------------------------------------------------------
 void ofApp::setup(){
-
+    ofxMidiIn::listPorts();
 }
 
 //--------------------------------------------------------------

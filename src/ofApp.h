@@ -3,12 +3,14 @@
 #include "ofMain.h"
 #include "ofxMidi.h"
 
+#define TWO_DIVIDE_PI 2.0/PI
 
 #define PANNING_TABLE_SIZE 16385
 #define WAVETABLE_SIZE 65536
 #define AUDIO_BUFFER_SIZE 4096
 #define AUDIO_SAMPLE_RATE 44100
 #define AUDIO_CHANNEL_NUMBER 2
+#define MIDI_CONTROLLER_TONE_GENERATOR_NUMBER 10
 
 enum PanningType
 {
@@ -314,21 +316,21 @@ public:
         }
         bGenerated = true;
     }
-    void generateMappedCurve(float startVolume, float endVolume)
+    void generateMappedCurve(float startVolume, float volumeEnd)
     {
         if (!bGenerated)
             return;
-        if (startVolume < endVolume)
+        if (startVolume < volumeEnd)
         {
             for (int i = 0; i < curve.size(); i++)
             {
-                curveMapped.push_back(ofMap(curve[i], 0.0, 1.0, startVolume, endVolume, false));
+                curveMapped.push_back(ofMap(curve[i], 0.0, 1.0, startVolume, volumeEnd, false));
             }
         } else
         {
             for (int i = 0; i < curve.size(); i++)
             {
-                curveMapped.push_back(ofMap(curve[i], 1.0, 0.0, startVolume, endVolume, false));
+                curveMapped.push_back(ofMap(curve[i], 1.0, 0.0, startVolume, volumeEnd, false));
             }
         }
     }
@@ -379,7 +381,7 @@ struct Segment
     int sampleDuration;
     float duration;
     float startVolume;
-    float endVolume;
+    float volumeEnd;
     CurveExponentGenerator curveExponentGenerator;
     
     int curveIndex;
@@ -388,10 +390,11 @@ struct Segment
 class ToneGenerator3 : public SoundObject
 {
 public:
-    void setup(float frequency, WaveType waveType, int sampleRate)
+    void setup(/*float frequency,*/ WaveType waveType, int sampleRate)
     {
-        this->frequency = frequency;
+        this->frequency = 440.0; //Set 440.0 by as a placeholder
         this->waveType = waveType;
+        this->sampleRate = sampleRate;
         
         panning.left = 1.0;
         panning.right = 1.0;
@@ -415,40 +418,93 @@ public:
             {
                 phase = 0;
                 phaseIncrement = (TWO_PI / sampleRate) * frequency;
-                twoDividePI = 2.0/PI;
             }
         }
         
-        bSoundAltered = true;
+        bAudioChanged = true;
         bSoundSamplePeriodFinished = false;
     }
-    void addSegment(float duration, float startVolume, float endVolume, float exponential, bool bSineWaveOscillator = false, int numberOscillator = 0)
+    void setWaveType(WaveType waveType)
+    {
+        this->waveType = waveType;
+        switch(waveType)
+        {
+            case SineWave:
+            {
+                //wavetableGenerator.generate(sampleRate);
+                phase = 0;
+                float freTI = WAVETABLE_SIZE / (float)sampleRate;
+                phaseIncrement = freTI * frequency;
+                break;
+            }
+            case SawtoothWave:
+            {
+                phase = -1;
+                phaseIncrement = (2 * frequency) / sampleRate;
+                break;
+            }
+            case TriangleWave:
+            {
+                phase = 0;
+                phaseIncrement = (TWO_PI / sampleRate) * frequency;
+            }
+        }
+        bAudioChanged = true;
+    }
+    void setFrequency(float frequency)
+    {
+        this->frequency = frequency;
+        switch(waveType)
+        {
+            case SineWave:
+            {
+                //wavetableGenerator.generate(sampleRate);
+                phase = 0;
+                float freTI = WAVETABLE_SIZE / (float)sampleRate;
+                phaseIncrement = freTI * frequency;
+                break;
+            }
+            case SawtoothWave:
+            {
+                phase = -1;
+                phaseIncrement = (2 * frequency) / sampleRate;
+                break;
+            }
+            case TriangleWave:
+            {
+                phase = 0;
+                phaseIncrement = (TWO_PI / sampleRate) * frequency;
+            }
+        }
+        bAudioChanged = true;
+    }
+    void addSegment(float duration, float startVolume, float volumeEnd, float exponential, bool bSineWaveOscillator = false, int numberOscillator = 0)
     {
         Segment temp;
         temp.duration = duration;
         temp.startVolume = startVolume;
-        temp.endVolume = endVolume;
+        temp.volumeEnd = volumeEnd;
         temp.sampleDuration = duration * AUDIO_SAMPLE_RATE;
-        if (startVolume == endVolume)
+        if (startVolume == volumeEnd)
         {
             temp.bVolumeChange = false;
         } else
         {
             temp.curveExponentGenerator.generate(duration, exponential,
-                                                 (startVolume < endVolume) ? true : false, AUDIO_SAMPLE_RATE);
-            temp.curveExponentGenerator.generateMappedCurve(startVolume, endVolume);
+                                                 (startVolume < volumeEnd) ? true : false, AUDIO_SAMPLE_RATE);
+            temp.curveExponentGenerator.generateMappedCurve(startVolume, volumeEnd);
             temp.bVolumeChange = true;
         }
         segments.push_back(temp);
         
-        bSoundAltered = true;
+        bAudioChanged = true;
     }
     
     void setPanning(float panning, PanningType panningType)
     {
         this->panning = zelmSynthUtil::getPanning(panning, panningType);
         
-        bSoundAltered = true;
+        bAudioChanged = true;
     }
     
     void start()
@@ -467,7 +523,7 @@ public:
         
         for (int i = 0; i < numFrames; i++, currentSampleCount++)
         {
-            if (!bSoundAltered && bSoundSamplePeriodFinished)
+            if (!bAudioChanged && bSoundSamplePeriodFinished)
             {
                 out[i*numChannels] = audioPeriod[audioPeriodCount];
                 out[i*numChannels+1] = audioPeriod[audioPeriodCount+1];
@@ -481,10 +537,10 @@ public:
                 {
                     bSoundSamplePeriodFinished = false;
                 }
-                if (bSoundAltered)
+                if (bAudioChanged)
                 {
                     audioPeriod.clear();
-                    bSoundAltered = false;
+                    bAudioChanged = false;
                 }
                 switch(state)
                 {
@@ -492,7 +548,7 @@ public:
                         segments[segmentIndex].curveIndex = 0;
                         if (!segments[segmentIndex].bVolumeChange)
                         {
-                            volume = segments[segmentIndex].endVolume;
+                            volume = segments[segmentIndex].volumeEnd;
                             state = 2;
                         } else
                         {
@@ -517,13 +573,13 @@ public:
                         }
                         break;
                     case 3:
-                        volume = segments[segmentIndex].endVolume;
+                        volume = segments[segmentIndex].volumeEnd;
                         currentSampleCount = -1;
                         if (++segmentIndex == segments.size())
                         {
                             //segmentIndex = 0;
                             audioPeriodCount = 0;
-                            //bSoundAltered = false;
+                            //bAudioChanged = false;
                             bSoundSamplePeriodFinished = true;
                         }
                         state = 0;
@@ -564,7 +620,7 @@ public:
                     }
                     case TriangleWave:
                     {
-                        triangleValue = (phase * twoDividePI);
+                        triangleValue = (phase * TWO_DIVIDE_PI);
                         if (phase < 0)
                         {
                             triangleValue = 1.0 + triangleValue;
@@ -590,13 +646,24 @@ public:
     /*float attackTime;
      float attackStartVolume;
      float decayTime;
-     float decayEndVolume;
+     float volumeDecayEnd;
      float peakVolume;*/
     
+    void getInUse()
+    {
+        return bInUse;
+    }
 private:
-    bool bSoundAltered = false;
+    //New values for MidiController
+    bool bInUse;
+    //End of new values
+    
+    
+    bool bAudioChanged = false;
     bool bSoundSamplePeriodFinished = false;
     //bool bPlayingFromSavedTable = false;
+    
+    int sampleRate;
     
     int audioPeriodCount;
     vector<float> audioPeriod;
@@ -623,7 +690,6 @@ private:
      float wavetableValue1;
      float wavetableValue2;*/
     
-    float twoDividePI;
     float triangleValue;
     //float wavetableIncrement;
     
@@ -632,30 +698,110 @@ private:
     
 };
 
+struct PeakSegment
+{
+    float duration;
+    float volumeStart;
+    float volumeEnd;
+    float curve;
+    PeakSegment * previousPeakSegment;
+};
 class MidiController : public ofxMidiListener
 {
     public:
-        void setup(WaveType waveType, int sampleRate, float totalDuration, float attackDuration, float decayDuration, float cutoffDuration)
+        void setup(int midiPort, WaveType waveType, int sampleRate, bool bRepeating, float durationTotal, float volumeMax, float durationAttack, float volumeStart, float durationDecay, float volumeDecay, float durationCutoff, float volumeCutoff)
         {
-        
+            this->midiPort = midiPort;
+            this->waveType = waveType;
+            this->sampleRate = sampleRate;
+            this->durationTotal = durationTotal;
+            this->attackDuration = attackDuration;
+            this->durationDecay = durationDecay;
+            this->durationCutoff = durationCutoff;
+            
+            midiIn.openPort(midiPort);
+            midiIn.ignoreTypes(false, false, false);
+            midiIn.addListener(this);
+            midiIn.setVerbose(true);
+            
+            for (int i = 0; i < MIDI_CONTROLLER_TONE_GENERATOR_NUMBER; i++)
+            {
+                toneGenerators[i].setup(waveType, sampleRate);
+                
+            }
         }
-        void newMidiMessage(ofxMidiMessage& eventArgs)
+    
+        void setMidiPort(int midiPort)
         {
-            midiMessage = eventArgs;
+            this->midiPort = midiPort;
+        }
+        void getMidiPort()
+        {
+            return midiPort;
+        }
+        void setWaveType(WaveType waveType)
+        {
+            this->waveType = waveType;
+        }
+        void getWaveType()
+        {
+            return waveType;
+        }
+        void setDuration(float durationTotal, float volumePeak);
+        void getDuration();
+        void setRepeat(bool repeat);
+        void setAttack(float duration, float startVolume, float curve);
+        void addPeakSegent();
+        void setDecay(float duration, float volumeEnd, float curve);
+        void setCutoff(float duration, float volumeEnd, float curve);
+        void newMidiMessage(ofxMidiMessage& message)
+        {
+            currentMidiMessage = message;
+            midiMessages.push_back(message);
+            
+            if (currentMidiMessage.status == MIDI_NOTE_ON)
+            {
+                noteOn[currentMidiMessage.pitch] = true;
+                //Do trigger or create tone generator
+                
+            } else if (currentMidiMessage.status == MIDI_NOTE_OFF)
+            {
+                //Do trigger note cut off
+                noteOn[currentMidiMessage.pitch] = false;
+                noteCutoff[currentMidiMessage.pitch] = true;
+            }
         }
     private:
+        int midiPort;
         ofxMidiIn midiIn;
-        ofxMidiMessage midiMessage;
+        ofxMidiMessage currentMidiMessage;
+        vector<ofxMidiMessage> midiMessages; //Midi message is removed on note off
     
         WaveType waveType;
         int sampleRate;
-        float totalDuration;
-        float attackDuation;
-        float decayDuration;
-        float cutoffDuration;
+        bool bRepeating;
+    
+    
+        float durationTotal;
+        float volumePeak;
+    
+        float durationAttack;
+        float volumeAttackStart;
+    
+        float durationDecay;
+        float volumeDecayEnd;
+    
+        float durationCutoff;
+        float volumeCutoffEnd;
+    
     
         zelmAudioMixer audioMixer;
-        vector<ToneGenerator3> toneGenerators;
+        //vector<ToneGenerator3> toneGenerators;
+        ToneGenerator3 toneGenerators[MIDI_CONTROLLER_TONE_GENERATOR_NUMBER]; //Create 10 tone generatores for maxium number of triggers
+        bool noteOn[128];
+        bool noteCutoff[128];
+        int noteToneGenerator[128];
+        //vector<bool> bToneGeneratorsInUse;
     
 };
 
