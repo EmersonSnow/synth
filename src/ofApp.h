@@ -499,6 +499,51 @@ public:
         
         bAudioChanged = true;
     }
+    void insertSegment(int position, float duration, float startVolume, float volumeEnd, float exponential, bool bSineWaveOscillator = false, int numberOscillator = 0)
+    {
+        if (segments.size() <= position)
+            return;
+        
+        Segment temp;
+        temp.duration = duration;
+        temp.startVolume = startVolume;
+        temp.volumeEnd = volumeEnd;
+        temp.sampleDuration = duration * AUDIO_SAMPLE_RATE;
+        if (startVolume == volumeEnd)
+        {
+            temp.bVolumeChange = false;
+        } else
+        {
+            temp.curveExponentGenerator.generate(duration, exponential,
+                                                 (startVolume < volumeEnd) ? true : false, AUDIO_SAMPLE_RATE);
+            temp.curveExponentGenerator.generateMappedCurve(startVolume, volumeEnd);
+            temp.bVolumeChange = true;
+        }
+        segments.insert(segments.begin()+position, temp);
+        
+        bAudioChanged = true;
+    }
+    void addCutoff(float duration, float startVolume, float volumeEnd, float exponential)
+    {
+        cutoff.duration = duration;
+        cutoff.startVolume = startVolume;
+        cutoff.volumeEnd = volumeEnd;
+        cutoff.sampleDuration = duration * AUDIO_SAMPLE_RATE;
+        
+        cutoff.curveExponentGenerator.generate(duration, exponential,
+                                             (startVolume < volumeEnd) ? true : false, AUDIO_SAMPLE_RATE);
+        cutoff.curveExponentGenerator.generateMappedCurve(startVolume, volumeEnd);
+        cutoff.bVolumeChange = true;
+
+    }
+    void removeSegment(int index)
+    {
+        if (segments.size() <= index)
+            return;
+        segments.erase(segments.begin()+index);
+        
+        bAudioChanged = true;
+    }
     
     void setPanning(float panning, PanningType panningType)
     {
@@ -511,6 +556,14 @@ public:
     {
         segmentIndex = 0;
         bStart = true;
+    }
+    void stopCutoff()
+    {
+        bCutoff = true;
+    }
+    void stop()
+    {
+        bStart = false;
     }
     void processAudio(ofSoundBuffer &in, ofSoundBuffer &out)
     {
@@ -569,7 +622,7 @@ public:
                     case 2:
                         if (segments[segmentIndex].sampleDuration <= currentSampleCount)
                         {
-                            state = 2;
+                            state = 3;
                         }
                         break;
                     case 3:
@@ -584,6 +637,12 @@ public:
                         }
                         state = 0;
                         break;
+                    case 4:
+                    {
+                        //TODO: work out cutoff
+                        break;
+                    }
+                        
                 }
                 
                 switch (waveType)
@@ -643,19 +702,16 @@ public:
         }
     }
     
-    /*float attackTime;
-     float attackStartVolume;
-     float decayTime;
-     float volumeDecayEnd;
-     float peakVolume;*/
-    
     void getInUse()
     {
         return bInUse;
     }
 private:
     //New values for MidiController
-    bool bInUse;
+    bool bInUse = false;
+    bool bCutoff = false;
+    
+    Segment cutoff;
     //End of new values
     
     
@@ -715,7 +771,7 @@ class MidiController : public ofxMidiListener
             this->waveType = waveType;
             this->sampleRate = sampleRate;
             this->durationTotal = durationTotal;
-            this->attackDuration = attackDuration;
+            this->durationAttack = durationAttack;
             this->durationDecay = durationDecay;
             this->durationCutoff = durationCutoff;
             
@@ -764,10 +820,10 @@ class MidiController : public ofxMidiListener
         {
             return bRepeat;
         }
-        void setAttack(float duration, float volumeEnd, float curve)
+        void setAttack(float duration, float volumeStart, float curve)
         {
             durationAttack = duration;
-            volumeAttackEnd = volumeEnd;
+            volumeAttackStart = volumeStart;
             curveAttack = curve;
         }
         void setDecay(float duration, float volumeEnd, float curve)
@@ -793,7 +849,7 @@ class MidiController : public ofxMidiListener
                 temp.volumeStart = volumePeak;
             } else
             {
-                temp.volumeEnd = volumeEnd;
+                temp.volumeStart = segmentsPeak[segmentsPeak.size()-1].volumeEnd;
             }
             segmentsPeak.push_back(temp);
             
@@ -810,7 +866,32 @@ class MidiController : public ofxMidiListener
             
             bPeakSegmentsChanged = true;
         }
-        void removePeakSegment();
+        void insertPeakSegment(int position, float duration, float volumeEnd, float curve)
+        {
+            if (segmentsPeak.size() <= position)
+                return;
+            
+            SegmentMidi temp;
+            temp.duration = duration;
+            temp.volumeEnd = volumeEnd;
+            temp.curve = curve;
+            if (position == 0)
+            {
+                temp.volumeStart = volumePeak;
+            } else
+            {
+                temp.volumeStart = segmentsPeak[position-1].volumeEnd;
+            }
+            segmentsPeak.insert(segmentsPeak.begin()+position, temp);
+            
+            bPeakSegmentsChanged = true;
+        }
+        void removePeakSegment(int index)
+        {
+            segmentsPeak.erase(segmentsPeak.begin()+index);
+            
+            bPeakSegmentsChanged = true;
+        }
         void generateSynth()
         {
             if (bPeakSegmentsChanged)
@@ -818,6 +899,8 @@ class MidiController : public ofxMidiListener
                 
             }
         }
+        void loadPresent(int index);
+        void savePresent(string name);
         void newMidiMessage(ofxMidiMessage& message)
         {
             currentMidiMessage = message;
